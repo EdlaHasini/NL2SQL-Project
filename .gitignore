@@ -6,3 +6,4 @@ env/
 *.db
 .vscode/
 Thumbs.db
+schema_cache.pkl

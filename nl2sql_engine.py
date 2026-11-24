@@ -5,6 +5,17 @@ from sqlparse.tokens import Name
 from openai import OpenAI
 from security import is_safe_query
 
+LAST_RETRIEVED = []   # for UI display
+
+def get_relevant_schema(question):
+    """RAG: inject only the tables relevant to this question."""
+    global LAST_RETRIEVED
+    from rag_schema import retrieve_tables          # lazy import avoids circular dependency
+    hits = retrieve_tables(question)
+    LAST_RETRIEVED = [t for t, _ in hits]
+    schema = get_schema_structured()
+    return "\n".join(f"Table: {t}\nColumns: {', '.join(sorted(schema[t]))}" for t in LAST_RETRIEVED)
+
 client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
 MODEL_NAME = "qwen2.5-coder:7b"   # or "sqlcoder"
 DB_PATH = "ecommerce.db"
@@ -53,7 +64,7 @@ def ground_identifiers(sql, schema):
 
 # ---------- Layer 2: agentic self-correction ----------
 def generate_sql_with_retry(nl_query, max_retries=3):
-    schema_str   = get_db_schema()
+    schema_str = get_relevant_schema(nl_query)
     schema_struct = get_schema_structured()
     messages = [{"role": "user", "content": f"""
 You are an expert data analyst. Translate the question into a valid SQLite query.
@@ -94,3 +105,16 @@ SQL:"""}]
                                             f"Use EXACT names from the schema. Return only corrected SQL."}
             ]
     raise RuntimeError(f"Failed after {max_retries} tries. Last error: {last_err}")
+
+
+def summarize_result(question, sql, df):
+    """LLM writes a one-sentence business insight from the result preview."""
+    if df.empty:
+        return None
+    preview = df.head(5).to_string(index=False)
+    prompt = (f"You are a data analyst. Answer in ONE plain sentence using only this data.\n"
+              f"Question: {question}\nData preview:\n{preview}\nSentence:")
+    resp = client.chat.completions.create(model=MODEL_NAME,
+                                          messages=[{"role": "user", "content": prompt}],
+                                          temperature=0.2)
+    return resp.choices[0].message.content.strip()
